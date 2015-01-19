@@ -1,10 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <gccore.h>
-#include <math.h>
 #include <wiiuse/wpad.h>
+#include <math.h>
+#include <aesndlib.h>
+#include <gcmodplay.h>
 
-#define NUM_PARTICLES 10
+#include "sound_mod.h"
+
+#define NUM_PARTICLES 1
 #define PARTICLE_MAX_WIDTH 20
 #define PARTICLE_MAX_HEIGHT 20
 #define PARTICLE_MAX_SPEED 5
@@ -13,8 +17,9 @@
 // GLOBAL DEFS
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+static MODPlay sound;
 int g_fb_height, g_fb_width;
-//ir_t ir;
+ir_t ir;
 
 typedef struct {
 	int pos_x, pos_y;   // screen coordinates
@@ -66,8 +71,9 @@ int main(int argc, char **argv) {
 		WPAD_ScanPads();
 
 		// WPAD_ButtonsDown tells us which buttons were pressed in this loop
-		// this is a "one shot" state which will not fire again until the button has been released
-		u32 pressed = WPAD_ButtonsDown(0);
+		// this is a "one shot" state which will not fire again until the button
+		// has been released
+		u32 pressed = WPAD_ButtonsDown(WPAD_CHAN_0);
 
 		// We return to the launcher application via exit
 		if ( pressed & WPAD_BUTTON_HOME ) exit(0);
@@ -76,33 +82,30 @@ int main(int argc, char **argv) {
 			printf("Button A pressed.\n");
 		}
 
-		u16 buttonsHeld = WPAD_ButtonsHeld(0);
+		u32 buttonsHeld = WPAD_ButtonsHeld(WPAD_CHAN_0);
 
 		if (buttonsHeld & WPAD_BUTTON_A ) {
 			printf("Button A is being held down.\n");
 		}
 
-		u16 buttonsUp = WPAD_ButtonsUp(0);
+		u16 buttonsUp = WPAD_ButtonsUp(WPAD_CHAN_0);
 
 		if (buttonsUp & WPAD_BUTTON_A ) {
 			printf("Button A released.\n");
 		}
 
-		/*if (PAD_StickY(0) > 18) {
+		/*if (PAD_StickY(WPAD_CHAN_0) > 18) {
 			printf("Joystick moved up.\n");
 		}
 
-		if (PAD_StickY(0) < -18) {
+		if (PAD_StickY(WPAD_CHAN_0) < -18) {
 			printf("Joystick moved down.\n");
 		}*/
 
-//		WPAD_IR(0, &ir);
-//		VIDEO_ClearFrameBuffer (rmode, xfb, COLOR_BLACK);
-//		DrawBox (ir.x, ir.y, ir.x + 1, ir.y + 1, COLOR_WHITE);
-
 		VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
 
-		DrawBox((g_fb_width>>1)-10, (g_fb_height>>1)-10, (g_fb_width>>1)+10, (g_fb_height>>1)+10, COLOR_WHITE);
+		DrawBox((g_fb_width>>1)-10, (g_fb_height>>1)-10,
+				(g_fb_width>>1)+10, (g_fb_height>>1)+10, COLOR_WHITE);
 		DrawBox(1, 1, g_fb_width-1, g_fb_height-1, COLOR_WHITE);
 		DrawParticle(g_fb_width>>1, g_fb_height>>1, 1, 1, COLOR_WHITE);
 
@@ -117,28 +120,20 @@ int main(int argc, char **argv) {
 
 void init() {
 
+	/*************************************************************************
+	 * VIDEO                                                                 *
+	 *************************************************************************/
 	// Initialise the video system
 	VIDEO_Init();
-	
-	// This function initialises the attached controllers
-	WPAD_Init();
-	
-//	// Init IR
-//	WPAD_SetVRes(0, 640, 480);
-//	WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
 
 	// Obtain the preferred video mode from the system
 	// This will correspond to the settings in the Wii menu
 	rmode = VIDEO_GetPreferredMode(NULL);
-
-	// Allocate memory for the display in the uncached region
-	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
-	
 	g_fb_width = rmode->fbWidth;
 	g_fb_height = rmode->xfbHeight;
 
-	// Setup particle system
-	initParticles();
+	// Allocate memory for the display in the uncached region
+	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
 
 	// Initialise the console, required for printf
 	console_init(xfb,20,20,g_fb_width,g_fb_height,g_fb_width*VI_DISPLAY_PIX_SZ);
@@ -158,6 +153,33 @@ void init() {
 	// Wait for Video setup to complete
 	VIDEO_WaitVSync();
 	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+
+	/*************************************************************************
+	 * AUDIO                                                                 *
+	 *************************************************************************/
+	// Initialise the audio subsysten
+	AESND_Init(NULL);
+	MODPlay_Init(&sound);
+	MODPlay_SetMOD(&sound, sound_mod);
+	MODPlay_SetVolume(&sound, 63,63);
+
+	/*************************************************************************
+	 * CONTROLS                                                              *
+	 *************************************************************************/
+	// This function initialises the attached controllers
+	WPAD_Init();
+
+	//	Configure infrared system of the Wii remote
+	WPAD_SetVRes(WPAD_CHAN_0, g_fb_width, g_fb_height);
+	WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
+	WPAD_IR(0, &ir);
+
+	/*************************************************************************
+	 * GAME RELATED STUFF                                                    *
+	 *************************************************************************/
+	// Setup particle system
+	initParticles();
+
 }
 
 void DrawHLine (int x1, int x2, int y, int color) {
@@ -214,14 +236,24 @@ void updateParticles() {
 
 	int i;
 	for(i=0; i<NUM_PARTICLES; i++) {
-		// TODO Calculate changes in movement
+
 		g_particles[i].pos_x += g_particles[i].dx;
 		g_particles[i].pos_y += g_particles[i].dy;
 
-		if(g_particles[i].pos_x < 1 || g_particles[i].pos_x >= (g_fb_width-g_particles[i].size_x))
+		// Check for collisions with screen boundaries
+		if(g_particles[i].pos_x < 1 || g_particles[i].pos_x >= (g_fb_width-g_particles[i].size_x)) {
 			g_particles[i].dx = -g_particles[i].dx;
-		if(g_particles[i].pos_y < 1 || g_particles[i].pos_y >= (g_fb_height-g_particles[i].size_y))
+			MODPlay_Stop(&sound);
+			MODPlay_Start(&sound);
+//			MODPlay_TriggerNote(&sound, 1 , 1, 1, 63);
+		}
+
+		if(g_particles[i].pos_y < 1 || g_particles[i].pos_y >= (g_fb_height-g_particles[i].size_y)) {
 			g_particles[i].dy = -g_particles[i].dy;
+			MODPlay_Stop(&sound);
+			MODPlay_Start(&sound);
+//			MODPlay_TriggerNote(&sound, 1 , 1, 1, 63);
+		}
 
 		// Display particle
 		DrawParticle(g_particles[i].pos_x, g_particles[i].pos_y,

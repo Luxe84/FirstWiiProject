@@ -33,7 +33,7 @@ LDFLAGS	=	-g $(MACHDEP) -Wl,-Map,$(notdir $@).map
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-lwiiuse -lbte -logc -lm
+LIBS	:=	-lwiiuse -lbte -lmodplay -laesnd -logc -lm
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -120,10 +120,11 @@ DEPENDS	:=	$(OFILES:.o=.d)
 $(OUTPUT).dol: $(OUTPUT).elf
 $(OUTPUT).elf: $(OFILES)
 
+
 #---------------------------------------------------------------------------------
-# This rule links in binary data with the .jpg extension
+# This rule links in binary data with the .mod extension
 #---------------------------------------------------------------------------------
-%.jpg.o	:	%.jpg
+%.mod.o	:	%.mod
 #---------------------------------------------------------------------------------
 	@echo $(notdir $<)
 	$(bin2o)
