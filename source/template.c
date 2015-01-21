@@ -1,25 +1,33 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <gccore.h>
+#include <ogcsys.h>
 #include <wiiuse/wpad.h>
 #include <math.h>
+#include <asndlib.h>
 #include <aesndlib.h>
-#include <gcmodplay.h>
+#include "oggplayer.h"
 
-#include "sound_mod.h"
+#include "sound_pcm.h"
+#include "bg_music_ogg.h"
 
-#define NUM_PARTICLES 1
+#define NUM_PARTICLES 2
 #define PARTICLE_MAX_WIDTH 20
 #define PARTICLE_MAX_HEIGHT 20
-#define PARTICLE_MAX_SPEED 5
+#define PARTICLE_MIN_WIDTH 2
+#define PARTICLE_MIN_HEIGHT 2
+#define PARTICLE_MAX_SPEED 7
 #define PARTICLE_MIN_SPEED 1
 
-// GLOBAL DEFS
+const int PARTICLE_MAX_SIZE = PARTICLE_MAX_WIDTH*PARTICLE_MAX_HEIGHT;
+const int PARTICLE_MIN_SIZE = PARTICLE_MIN_WIDTH*PARTICLE_MIN_HEIGHT;
+
+// GLOBAL VARS
 static void *xfb = NULL;
-static GXRModeObj *rmode = NULL;
-static MODPlay sound;
+static GXRModeObj *vmode = NULL;
 int g_fb_height, g_fb_width;
 ir_t ir;
+s32 voice;
 
 typedef struct {
 	int pos_x, pos_y;   // screen coordinates
@@ -37,6 +45,7 @@ void DrawBox (int, int, int, int, int);
 void DrawParticle(int x, int y, int width, int height, int color);
 void initParticles();
 void updateParticles();
+void printInfo();
 
 /******************************************************************************
  * Main method
@@ -45,28 +54,7 @@ int main(int argc, char **argv) {
 
 	init();
 
-	// The console understands VT terminal escape codes
-	// This positions the cursor on row 2, column 1
-	// we can use variables for this with format codes too
-	// e.g. printf ("\x1b[%d;%dH", row, column );
-	printf("\x1b[2;1H");
-
-	printf("Hello World!\n\n");
-
-	// Look at some interesting data
-	printf("\taa:        %d\n", rmode->aa);
-	printf("\tfbWidtht:  %d\n", rmode->fbWidth);
-	printf("\tefbHeight: %d\n", rmode->efbHeight);
-	printf("\txfbHeight: %d\n", rmode->xfbHeight);
-	printf("\txfbMode:   %d\n", rmode->xfbMode);
-	printf("\tviHeight:  %d\n", rmode->viHeight);
-	printf("\tviWidth:   %d\n", rmode->viWidth);
-	printf("\tviTVMode:  %d\n", rmode->viTVMode);
-	printf("\tviXOrigin: %d\n", rmode->viXOrigin);
-	printf("\tviYOrigin: %d\n", rmode->viYOrigin);
-
 	while(1) {
-
 		// Call WPAD_ScanPads each loop, this reads the latest controller states
 		WPAD_ScanPads();
 
@@ -102,8 +90,12 @@ int main(int argc, char **argv) {
 			printf("Joystick moved down.\n");
 		}*/
 
-		VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
+		VIDEO_ClearFrameBuffer(vmode, xfb, COLOR_BLACK);
 
+		// Console output
+		//printInfo();
+
+		// Draw stuff
 		DrawBox((g_fb_width>>1)-10, (g_fb_height>>1)-10,
 				(g_fb_width>>1)+10, (g_fb_height>>1)+10, COLOR_WHITE);
 		DrawBox(1, 1, g_fb_width-1, g_fb_height-1, COLOR_WHITE);
@@ -128,18 +120,22 @@ void init() {
 
 	// Obtain the preferred video mode from the system
 	// This will correspond to the settings in the Wii menu
-	rmode = VIDEO_GetPreferredMode(NULL);
-	g_fb_width = rmode->fbWidth;
-	g_fb_height = rmode->xfbHeight;
+	vmode = VIDEO_GetPreferredMode(NULL);
+	g_fb_width = vmode->fbWidth;
+	g_fb_height = vmode->xfbHeight;
+
+//	// widescreen fix
+//	if(CONF_GetAspectRatio() == CONF_ASPECT_16_9)
+//		vmode->viWidth = VI_MAX_WIDTH_PAL;
 
 	// Allocate memory for the display in the uncached region
-	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(vmode));
 
 	// Initialise the console, required for printf
 	console_init(xfb,20,20,g_fb_width,g_fb_height,g_fb_width*VI_DISPLAY_PIX_SZ);
 	
 	// Set up the video registers with the chosen mode
-	VIDEO_Configure(rmode);
+	VIDEO_Configure(vmode);
 	
 	// Tell the video hardware where our display memory is
 	VIDEO_SetNextFramebuffer(xfb);
@@ -152,16 +148,16 @@ void init() {
 
 	// Wait for Video setup to complete
 	VIDEO_WaitVSync();
-	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+	if(vmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
 
 	/*************************************************************************
 	 * AUDIO                                                                 *
 	 *************************************************************************/
 	// Initialise the audio subsysten
-	AESND_Init(NULL);
-	MODPlay_Init(&sound);
-	MODPlay_SetMOD(&sound, sound_mod);
-	MODPlay_SetVolume(&sound, 63,63);
+	AUDIO_Init(NULL);
+	ASND_Init(NULL);
+	ASND_Pause(0);
+	//PlayOgg(bg_music_ogg, bg_music_ogg_size, 0, OGG_ONE_TIME);
 
 	/*************************************************************************
 	 * CONTROLS                                                              *
@@ -220,12 +216,12 @@ void initParticles() {
 	int i;
 	for(i=0; i<NUM_PARTICLES; i++) {
 		// Create particle with random size, position and speed
-		g_particles[i].size_x = rand() % PARTICLE_MAX_WIDTH;
-		g_particles[i].size_y = rand() % PARTICLE_MAX_HEIGHT;
+		g_particles[i].size_x = rand() % (PARTICLE_MAX_WIDTH-PARTICLE_MIN_WIDTH+1) + PARTICLE_MIN_WIDTH;
+		g_particles[i].size_y = rand() % (PARTICLE_MAX_HEIGHT-PARTICLE_MIN_HEIGHT+1) + PARTICLE_MIN_HEIGHT;
 		g_particles[i].pos_x = rand() % (g_fb_width-g_particles[i].size_x);
 		g_particles[i].pos_y = rand() % (g_fb_height-g_particles[i].size_y);
-		g_particles[i].dx = (rand() % PARTICLE_MAX_SPEED) + PARTICLE_MIN_SPEED;
-		g_particles[i].dy = (rand() % PARTICLE_MAX_SPEED) + PARTICLE_MIN_SPEED;
+		g_particles[i].dx = (rand() % PARTICLE_MAX_SPEED-PARTICLE_MIN_SPEED+1) + PARTICLE_MIN_SPEED;
+		g_particles[i].dy = (rand() % PARTICLE_MAX_SPEED-PARTICLE_MIN_SPEED+1) + PARTICLE_MIN_SPEED;
 
 		if(rand() % 1) g_particles[i].dx = -g_particles[i].dx;
 		if(rand() % 1) g_particles[i].dy = -g_particles[i].dy;
@@ -234,25 +230,29 @@ void initParticles() {
 
 void updateParticles() {
 
-	int i;
+	int i, size, freq, freq_min, freq_max;
 	for(i=0; i<NUM_PARTICLES; i++) {
 
+		// Apply changes in movement
 		g_particles[i].pos_x += g_particles[i].dx;
 		g_particles[i].pos_y += g_particles[i].dy;
+
+		size = g_particles[i].size_x*g_particles[i].size_y;
+		freq_max = VOICE_FREQ48KHZ;
+		freq_min = VOICE_FREQ48KHZ/2;
+		freq = freq_min + (freq_max - freq_min)/(PARTICLE_MAX_SIZE-PARTICLE_MIN_SIZE) * (PARTICLE_MAX_SIZE-size);
 
 		// Check for collisions with screen boundaries
 		if(g_particles[i].pos_x < 1 || g_particles[i].pos_x >= (g_fb_width-g_particles[i].size_x)) {
 			g_particles[i].dx = -g_particles[i].dx;
-			MODPlay_Stop(&sound);
-			MODPlay_Start(&sound);
-//			MODPlay_TriggerNote(&sound, 1 , 1, 1, 63);
+			voice=ASND_GetFirstUnusedVoice();
+			ASND_SetVoice(voice, VOICE_MONO_16BIT,freq, 0, (u8 *)sound_pcm, sound_pcm_size, 255, 255, NULL);
 		}
 
 		if(g_particles[i].pos_y < 1 || g_particles[i].pos_y >= (g_fb_height-g_particles[i].size_y)) {
 			g_particles[i].dy = -g_particles[i].dy;
-			MODPlay_Stop(&sound);
-			MODPlay_Start(&sound);
-//			MODPlay_TriggerNote(&sound, 1 , 1, 1, 63);
+			voice=ASND_GetFirstUnusedVoice();
+			ASND_SetVoice(voice, VOICE_MONO_16BIT,freq, 0, (u8 *)sound_pcm, sound_pcm_size, 255, 255, NULL);
 		}
 
 		// Display particle
@@ -260,4 +260,26 @@ void updateParticles() {
 					 g_particles[i].size_x, g_particles[i].size_y,
 					 COLOR_WHITE);
 	}
+}
+
+void printInfo() {
+
+	// The console understands VT terminal escape codes
+	// This positions the cursor on row 2, column 1
+	// we can use variables for this with format codes too
+	// e.g. printf ("\x1b[%d;%dH", row, column );
+	printf("\x1b[2;1H");
+
+	printf("Hello World!\n\n");
+
+	printf("\taa:        %d\n", vmode->aa);
+	printf("\tfbWidtht:  %d\n", vmode->fbWidth);
+	printf("\tefbHeight: %d\n", vmode->efbHeight);
+	printf("\txfbHeight: %d\n", vmode->xfbHeight);
+	printf("\txfbMode:   %d\n", vmode->xfbMode);
+	printf("\tviHeight:  %d\n", vmode->viHeight);
+	printf("\tviWidth:   %d\n", vmode->viWidth);
+	printf("\tviTVMode:  %d\n", vmode->viTVMode);
+	printf("\tviXOrigin: %d\n", vmode->viXOrigin);
+	printf("\tviYOrigin: %d\n", vmode->viYOrigin);
 }
