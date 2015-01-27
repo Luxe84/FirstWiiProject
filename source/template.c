@@ -24,13 +24,16 @@ const int PARTICLE_MIN_FREQ = VOICE_FREQ48KHZ>>1;
 const int PARTICLE_MAX_SIZE = PARTICLE_MAX_WIDTH*PARTICLE_MAX_HEIGHT;
 const int PARTICLE_MIN_SIZE = PARTICLE_MIN_WIDTH*PARTICLE_MIN_HEIGHT;
 
-// GLOBAL VARS
+// Global definitions
 static void *g_xfb[2]; 				// external framebuffers, double buffering
 int g_fbi=0;						// index of current framebuffer
 static GXRModeObj *g_vmode = NULL;	// ref. to render mode object
 int g_fb_height, g_fb_width;		// dimensions of external fb
-ir_t g_ir;							// handle for IR
 s32 g_voice;						// voice handle
+WPADData *g_wpd = NULL;				// for handling controller input
+s32 g_shutDownType = -1;			// flag for callback functions
+int evctr = 0;						// event counter
+int g_simulate = 1;					// should the particle simulation run?
 
 typedef struct {
 	int pos_x, pos_y;   // screen coordinates
@@ -40,6 +43,41 @@ typedef struct {
 }Particle;
 
 Particle g_particles[NUM_PARTICLES];
+
+// Callback functions
+
+/*****************************************************************************
+ * Directly load the Wii Channels menu, without actually cold-resetting the  *
+ * system                                                                    *
+ *****************************************************************************/
+void cb_WiiResetButtonPressed() {
+	g_shutDownType = SYS_RETURNTOMENU;
+}
+
+/*****************************************************************************
+ * Powers off the Wii, automatically choosing Standby or Idle mode depending *
+ * on the user's configuration                                               *
+ *****************************************************************************/
+void cb_WiiPowerButtonPressed() {
+	g_shutDownType = SYS_POWEROFF;
+}
+
+/*****************************************************************************
+ * Powers off the Wii to standby (red LED, WC24 off) mode                    *
+ *****************************************************************************/
+void cb_WiimotePowerButtonPressed(s32 chan) {
+	g_shutDownType = SYS_POWEROFF_STANDBY;
+}
+
+/*****************************************************************************
+ * Callback triggered by Wiimote events                                      *
+ *****************************************************************************/
+void cb_WiimoteEventFired(int chan, const WPADData *data) {
+	evctr++;
+	if(data->btns_d & WPAD_BUTTON_A) g_simulate^=1;
+}
+
+// Drawing
 
 /*****************************************************************************
  * Structure of the external framebuffer xfb[]:                              *
@@ -129,6 +167,53 @@ void drawParticle(int x1, int y1, int x2, int y2, int color) {
 		drawHLine(x1, x2, i, color);
 }
 
+void drawdot(float w, float h, float fx, float fy, u32 color) {
+	u32 *fb;
+	int px,py;
+	int x,y;
+	fb = (u32*)g_xfb[g_fbi];
+
+	y = fy * g_fb_height / h;
+	x = fx * g_fb_width  / w / 2;
+
+	for(py=y-4; py<=(y+4); py++) {
+		if(py < 0 || py >= g_fb_height)
+				continue;
+		for(px=x-2; px<=(x+2); px++) {
+			if(px < 0 || px >= g_fb_width/2)
+				continue;
+			fb[g_fb_width/VI_DISPLAY_PIX_SZ*py + px] = color;
+		}
+	}
+
+}
+
+void displayIR() {
+	int i;
+	float theta;
+
+	// IR dots
+	for(i=0; i<4; i++) {
+		if(g_wpd->ir.dot[i].visible) {
+			drawdot(1024, 768, g_wpd->ir.dot[i].rx, g_wpd->ir.dot[i].ry, COLOR_YELLOW);
+		}
+	}
+	// Sensor bar as it is seen by the wiimote
+	if(g_wpd->ir.raw_valid) {
+		for(i=0; i<2; i++) {
+			drawdot(4, 4, g_wpd->ir.sensorbar.rot_dots[i].x+2, g_wpd->ir.sensorbar.rot_dots[i].y+2, COLOR_GREEN);
+		}
+	}
+	// Cursor
+	if(g_wpd->ir.valid) {
+		theta = g_wpd->ir.angle / 180.f * M_PI;
+		drawdot(g_fb_width, g_fb_height, g_wpd->ir.x, g_wpd->ir.y, COLOR_RED);
+		drawdot(g_fb_width, g_fb_height, g_wpd->ir.x + 10*sinf(theta), g_wpd->ir.y - 10*cosf(theta), COLOR_BLUE);
+	}
+}
+
+// Init and update routines
+
 int rnd(int a, int b) {
 	return rand() % (b-a+1) + a;
 }
@@ -171,7 +256,7 @@ void updateParticles() {
 			g_particles[i].pos_x = (g_particles[i].pos_x<0)?0:g_fb_width-g_particles[i].size_x;
 			g_voice=ASND_GetFirstUnusedVoice();
 			ASND_SetVoice(g_voice, VOICE_MONO_16BIT, g_particles[i].freq, 0,
-						 (u8 *)sound_pcm, sound_pcm_size, 255, 255, NULL);
+						 (u8 *)sound_pcm, sound_pcm_size, 63, 63, NULL);
 		}
 
 		if(g_particles[i].pos_y < 0 || g_particles[i].pos_y > (g_fb_height-g_particles[i].size_y)) {
@@ -179,7 +264,7 @@ void updateParticles() {
 			g_particles[i].pos_y = (g_particles[i].pos_y<0)?0:g_fb_height-g_particles[i].size_y;
 			g_voice=ASND_GetFirstUnusedVoice();
 			ASND_SetVoice(g_voice, VOICE_MONO_16BIT, g_particles[i].freq, 0,
-						 (u8 *)sound_pcm, sound_pcm_size, 255, 255, NULL);
+						 (u8 *)sound_pcm, sound_pcm_size, 63, 63, NULL);
 		}
 
 		// Display updated particle
@@ -190,26 +275,79 @@ void updateParticles() {
 	}
 }
 
-void printInfo() {
+void printVideoInfo() {
 
-	// The console understands VT terminal escape codes
-	// This positions the cursor on row 2, column 1
-	// we can use variables for this with format codes too
-	// e.g. printf ("\x1b[%d;%dH", row, column );
-	printf("\x1b[2;1H");
+	if(g_vmode!=NULL)
+	{
+		// The console understands VT terminal escape codes
+		// This positions the cursor on row 2, column 1
+		// we can use variables for this with format codes too
+		// e.g. printf ("\x1b[%d;%dH", row, column );
+		printf("\x1b[2;1H");
 
-	printf("Hello World!\n\n");
+		printf("Hello World!\n\n");
 
-	printf("\taa:        %d\n", g_vmode->aa);
-	printf("\tfbWidtht:  %d\n", g_vmode->fbWidth);
-	printf("\tefbHeight: %d\n", g_vmode->efbHeight);
-	printf("\txfbHeight: %d\n", g_vmode->xfbHeight);
-	printf("\txfbMode:   %d\n", g_vmode->xfbMode);
-	printf("\tviWidth:   %d\n", g_vmode->viWidth);
-	printf("\tviHeight:  %d\n", g_vmode->viHeight);
-	printf("\tviTVMode:  %d\n", g_vmode->viTVMode);
-	printf("\tviXOrigin: %d\n", g_vmode->viXOrigin);
-	printf("\tviYOrigin: %d\n", g_vmode->viYOrigin);
+		printf("\taa:        %d\n", g_vmode->aa);
+		printf("\tfbWidtht:  %d\n", g_vmode->fbWidth);
+		printf("\tefbHeight: %d\n", g_vmode->efbHeight);
+		printf("\txfbHeight: %d\n", g_vmode->xfbHeight);
+		printf("\txfbMode:   %d\n", g_vmode->xfbMode);
+		printf("\tviWidth:   %d\n", g_vmode->viWidth);
+		printf("\tviHeight:  %d\n", g_vmode->viHeight);
+		printf("\tviTVMode:  %d\n", g_vmode->viTVMode);
+		printf("\tviXOrigin: %d\n", g_vmode->viXOrigin);
+		printf("\tviYOrigin: %d\n", g_vmode->viYOrigin);
+	}
+}
+
+void printWiimoteinfo() {
+	if(g_wpd!=NULL) {
+		int i;
+		printf("\n");
+		printf(" Event count: %d\n",evctr);
+		printf(" Battery Level: %d\n", g_wpd->battery_level);
+		printf(" Data->Err: %d\n",g_wpd->err);
+		printf(" IR Dots:\n");
+		for(i=0; i<4; i++) {
+			if(g_wpd->ir.dot[i].visible) {
+				printf(" %4d, %3d\n", g_wpd->ir.dot[i].rx, g_wpd->ir.dot[i].ry);
+			}
+			else {
+				printf(" None\n");
+			}
+		}
+		if(g_wpd->ir.valid) {
+			printf(" Cursor: %.02f, %.02f\n", g_wpd->ir.x, g_wpd->ir.y);
+			printf(" Angle: %.02f deg\n", g_wpd->ir.angle);
+		}
+		else {
+			printf(" No Cursor\n\n");
+		}
+		if(g_wpd->ir.raw_valid) {
+			printf(" Distance: %.02fm\n", g_wpd->ir.z);
+			printf(" Yaw: %.02f deg\n", g_wpd->orient.yaw);
+		} else {
+			printf("\n\n");
+		}
+		printf(" Accel:\n");
+		printf(" XYZ: %3d,%3d,%3d\n",g_wpd->accel.x,g_wpd->accel.y,g_wpd->accel.z);
+		printf(" Pitch: %.02f\n",g_wpd->orient.pitch);
+		printf(" Roll: %.02f\n",g_wpd->orient.roll);
+		printf(" Buttons down:\n ");
+		if(g_wpd->btns_h & WPAD_BUTTON_A) printf("A ");
+		if(g_wpd->btns_h & WPAD_BUTTON_B) printf("B ");
+		if(g_wpd->btns_h & WPAD_BUTTON_1) printf("1 ");
+		if(g_wpd->btns_h & WPAD_BUTTON_2) printf("2 ");
+		if(g_wpd->btns_h & WPAD_BUTTON_MINUS) printf("MINUS ");
+		if(g_wpd->btns_h & WPAD_BUTTON_HOME) printf("HOME ");
+		if(g_wpd->btns_h & WPAD_BUTTON_PLUS) printf("PLUS ");
+		printf("\n ");
+		if(g_wpd->btns_h & WPAD_BUTTON_LEFT) printf("LEFT ");
+		if(g_wpd->btns_h & WPAD_BUTTON_RIGHT) printf("RIGHT ");
+		if(g_wpd->btns_h & WPAD_BUTTON_UP) printf("UP ");
+		if(g_wpd->btns_h & WPAD_BUTTON_DOWN) printf("DOWN ");
+		printf("\n");
+	}
 }
 
 void init() {
@@ -234,10 +372,6 @@ void init() {
 	g_fb_width = g_vmode->fbWidth;
 	g_fb_height = g_vmode->xfbHeight;
 
-	// Initialise the console, required for printf
-	console_init(g_xfb[g_fbi], 20, 20, g_fb_width, g_fb_height,
-				 g_fb_width * VI_DISPLAY_PIX_SZ);
-
 	// Set up the video registers with the chosen mode
 	VIDEO_Configure(g_vmode);
 
@@ -261,7 +395,7 @@ void init() {
 	AUDIO_Init(NULL);
 	ASND_Init(NULL);
 	ASND_Pause(0);
-	//PlayOgg(bg_music_ogg, bg_music_ogg_size, 0, OGG_ONE_TIME);
+	PlayOgg(bg_music_ogg, bg_music_ogg_size, 0, OGG_INFINITE_TIME);
 
 	/*************************************************************************
 	 * CONTROLS                                                              *
@@ -272,7 +406,11 @@ void init() {
 	//	Configure infrared system of the Wii remote
 	WPAD_SetVRes(WPAD_CHAN_0, g_fb_width, g_fb_height);
 	WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
-	WPAD_IR(0, &g_ir);
+
+	// Install callbacks
+	SYS_SetResetCallback(cb_WiiResetButtonPressed);
+	SYS_SetPowerCallback(cb_WiiPowerButtonPressed);
+	WPAD_SetPowerButtonCallback(cb_WiimotePowerButtonPressed);
 
 	/*************************************************************************
 	 * GAME RELATED STUFF                                                    *
@@ -286,59 +424,54 @@ void init() {
  * Main method
  *****************************************************************************/
 int main(int argc, char **argv) {
+	int ret;
+	u32 type;
 
+	// Initialization
 	init();
 
-	while(1) {
-//		// Call WPAD_ScanPads each loop, this reads the latest controller states
-//		WPAD_ScanPads();
-//
-//		// WPAD_ButtonsDown tells us which buttons were pressed in this loop
-//		// this is a "one shot" state which will not fire again until the button
-//		// has been released
-//		u32 pressed = WPAD_ButtonsDown(WPAD_CHAN_0);
-//
-//		// We return to the launcher application via exit
-//		if ( pressed & WPAD_BUTTON_HOME ) exit(0);
-//
-//		if( pressed & WPAD_BUTTON_A ) {
-//			printf("Button A pressed.\n");
-//		}
-//
-//		u32 buttonsHeld = WPAD_ButtonsHeld(WPAD_CHAN_0);
-//
-//		if (buttonsHeld & WPAD_BUTTON_A ) {
-//			printf("Button A is being held down.\n");
-//		}
-//
-//		u16 buttonsUp = WPAD_ButtonsUp(WPAD_CHAN_0);
-//
-//		if (buttonsUp & WPAD_BUTTON_A ) {
-//			printf("Button A released.\n");
-//		}
-//
-//		/*if (PAD_StickY(WPAD_CHAN_0) > 18) {
-//			printf("Joystick moved up.\n");
-//		}
-//
-//		if (PAD_StickY(WPAD_CHAN_0) < -18) {
-//			printf("Joystick moved down.\n");
-//		}*/
-//
+	// Game loop
+	while(g_shutDownType==-1) {
+		// Setup console, required for printf
+		console_init(g_xfb[g_fbi], 0, 0, g_fb_width, g_fb_height,
+					 g_fb_width * VI_DISPLAY_PIX_SZ);
 		VIDEO_ClearFrameBuffer(g_vmode, g_xfb[g_fbi], COLOR_BLACK);
+		//printVideoInfo();
 
-		// Console output
-		printInfo();
+		// Check status of the Wiimote
+		WPAD_ReadPending(WPAD_CHAN_ALL, cb_WiimoteEventFired);
+		ret = WPAD_Probe(WPAD_CHAN_0, &type);
+		switch(ret) {
+			case WPAD_ERR_NO_CONTROLLER:
+				printf(" Wiimote not connected\n");
+				break;
+			case WPAD_ERR_NOT_READY:
+				printf(" Wiimote not ready\n");
+				break;
+			case WPAD_ERR_NONE:
+				printf(" Wiimote ready\n");
+				break;
+			default:
+				printf(" Unknown Wiimote status %d\n", ret);
+		}
 
-		// Draw stuff
+		// If no error occured, process retrieved controller input
+		if(ret == WPAD_ERR_NONE)
+		{
+			g_wpd = WPAD_Data(WPAD_CHAN_0);
+			printWiimoteinfo();
+			displayIR();
+		}
+
+		// Display background
 		drawBox((g_fb_width>>1)-10, (g_fb_height>>1)-10,
 				(g_fb_width>>1)+10, (g_fb_height>>1)+10, COLOR_WHITE);
-		drawBox(1, 1, g_fb_width-1, g_fb_height-1, COLOR_WHITE);
-		drawParticle(g_fb_width>>1, g_fb_height>>1,
-				     g_fb_width>>1, g_fb_height>>1,
-					 COLOR_WHITE);
+		drawBox(0, 0, g_fb_width-1, g_fb_height-1, COLOR_WHITE);
+		drawVLine(g_fb_width>>1, 0, g_fb_height-1, COLOR_WHITE);
 
-		updateParticles();
+		// Update game engine and render changes
+		if(g_simulate)
+			updateParticles();
 
 		// Wait for the next frame and switch framebuffer
 		VIDEO_SetNextFramebuffer(g_xfb[g_fbi]);
@@ -346,6 +479,9 @@ int main(int argc, char **argv) {
 		VIDEO_WaitVSync();
 		g_fbi^=1;
 	}
+
+	// Perform invoked shutdown of the application
+	SYS_ResetSystem(g_shutDownType, 0, 0);
 
 	return 0;
 }
