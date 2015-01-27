@@ -25,17 +25,18 @@ const int PARTICLE_MAX_SIZE = PARTICLE_MAX_WIDTH*PARTICLE_MAX_HEIGHT;
 const int PARTICLE_MIN_SIZE = PARTICLE_MIN_WIDTH*PARTICLE_MIN_HEIGHT;
 
 // GLOBAL VARS
-static void *xfb = NULL;
-static GXRModeObj *vmode = NULL;
-int g_fb_height, g_fb_width;
-ir_t ir;
-s32 voice;
+static void *g_xfb[2]; 				// external framebuffers, double buffering
+int g_fbi=0;						// index of current framebuffer
+static GXRModeObj *g_vmode = NULL;	// ref. to render mode object
+int g_fb_height, g_fb_width;		// dimensions of external fb
+ir_t g_ir;							// handle for IR
+s32 g_voice;						// voice handle
 
 typedef struct {
 	int pos_x, pos_y;   // screen coordinates
 	int size_x, size_y; // dimensions
-	int dx, dy;        // speed values
-	int freq;		   // freequency of collision sound
+	int dx, dy;         // speed values
+	int freq;		    // freequency of collision sound
 }Particle;
 
 Particle g_particles[NUM_PARTICLES];
@@ -79,7 +80,7 @@ void drawHLine0 (int x1, int x2, int y, int color) {
     x1 >>= 1;
     x2 >>= 1;
     for (i = x1; i <= x2; i++) {
-        u32 *tmpfb = xfb;
+        u32 *tmpfb = g_xfb[g_fbi];
         tmpfb[y+i] = color;
     }
 }
@@ -89,7 +90,7 @@ void drawHLine (int x1, int x2, int y, int color) {
     x1 >>= 1;
     x2 >>= 1;
     y *= g_fb_width>>1;
-    u32 *tmpfb = xfb;
+    u32 *tmpfb = g_xfb[g_fbi];
     tmpfb += y;
     for (i = x1; i <= x2; i++) {
         tmpfb[i] = color;
@@ -100,7 +101,7 @@ void drawVLine0 (int x, int y1, int y2, int color) {
     int i;
     x >>= 1;
     for (i = y1; i <= y2; i++) {
-        u32 *tmpfb = xfb;
+        u32 *tmpfb = g_xfb[g_fbi];
         tmpfb[x + ((640 * i) >> 1)] = color;
     }
 }
@@ -108,7 +109,7 @@ void drawVLine0 (int x, int y1, int y2, int color) {
 void drawVLine (int x, int y1, int y2, int color) {
     int i;
     x >>= 1;
-    u32 *tmpfb = xfb;
+    u32 *tmpfb = g_xfb[g_fbi];
     tmpfb += x;
     for (i = y1; i <= y2; i++) {
         tmpfb[(g_fb_width>>1)*i] = color;
@@ -168,16 +169,16 @@ void updateParticles() {
 		if(g_particles[i].pos_x < 0 || g_particles[i].pos_x > (g_fb_width-g_particles[i].size_x)) {
 			g_particles[i].dx = -g_particles[i].dx;
 			g_particles[i].pos_x = (g_particles[i].pos_x<0)?0:g_fb_width-g_particles[i].size_x;
-			voice=ASND_GetFirstUnusedVoice();
-			ASND_SetVoice(voice, VOICE_MONO_16BIT, g_particles[i].freq, 0,
+			g_voice=ASND_GetFirstUnusedVoice();
+			ASND_SetVoice(g_voice, VOICE_MONO_16BIT, g_particles[i].freq, 0,
 						 (u8 *)sound_pcm, sound_pcm_size, 255, 255, NULL);
 		}
 
 		if(g_particles[i].pos_y < 0 || g_particles[i].pos_y > (g_fb_height-g_particles[i].size_y)) {
 			g_particles[i].dy = -g_particles[i].dy;
 			g_particles[i].pos_y = (g_particles[i].pos_y<0)?0:g_fb_height-g_particles[i].size_y;
-			voice=ASND_GetFirstUnusedVoice();
-			ASND_SetVoice(voice, VOICE_MONO_16BIT, g_particles[i].freq, 0,
+			g_voice=ASND_GetFirstUnusedVoice();
+			ASND_SetVoice(g_voice, VOICE_MONO_16BIT, g_particles[i].freq, 0,
 						 (u8 *)sound_pcm, sound_pcm_size, 255, 255, NULL);
 		}
 
@@ -199,16 +200,16 @@ void printInfo() {
 
 	printf("Hello World!\n\n");
 
-	printf("\taa:        %d\n", vmode->aa);
-	printf("\tfbWidtht:  %d\n", vmode->fbWidth);
-	printf("\tefbHeight: %d\n", vmode->efbHeight);
-	printf("\txfbHeight: %d\n", vmode->xfbHeight);
-	printf("\txfbMode:   %d\n", vmode->xfbMode);
-	printf("\tviWidth:   %d\n", vmode->viWidth);
-	printf("\tviHeight:  %d\n", vmode->viHeight);
-	printf("\tviTVMode:  %d\n", vmode->viTVMode);
-	printf("\tviXOrigin: %d\n", vmode->viXOrigin);
-	printf("\tviYOrigin: %d\n", vmode->viYOrigin);
+	printf("\taa:        %d\n", g_vmode->aa);
+	printf("\tfbWidtht:  %d\n", g_vmode->fbWidth);
+	printf("\tefbHeight: %d\n", g_vmode->efbHeight);
+	printf("\txfbHeight: %d\n", g_vmode->xfbHeight);
+	printf("\txfbMode:   %d\n", g_vmode->xfbMode);
+	printf("\tviWidth:   %d\n", g_vmode->viWidth);
+	printf("\tviHeight:  %d\n", g_vmode->viHeight);
+	printf("\tviTVMode:  %d\n", g_vmode->viTVMode);
+	printf("\tviXOrigin: %d\n", g_vmode->viXOrigin);
+	printf("\tviYOrigin: %d\n", g_vmode->viYOrigin);
 }
 
 void init() {
@@ -221,25 +222,27 @@ void init() {
 
 	// Obtain the preferred video mode from the system
 	// This will correspond to the settings in the Wii menu
-	vmode = VIDEO_GetPreferredMode(NULL);
+	g_vmode = VIDEO_GetPreferredMode(NULL);
 
 	// widescreen fix
 	if(CONF_GetAspectRatio() == CONF_ASPECT_16_9)
-		vmode->viWidth = VI_MAX_WIDTH_PAL;
+		g_vmode->viWidth = VI_MAX_WIDTH_PAL;
 
 	// Allocate memory for the display in the uncached region
-	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(vmode));
-	g_fb_width = vmode->fbWidth;
-	g_fb_height = vmode->xfbHeight;
+	g_xfb[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(g_vmode));
+	g_xfb[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(g_vmode));
+	g_fb_width = g_vmode->fbWidth;
+	g_fb_height = g_vmode->xfbHeight;
 
 	// Initialise the console, required for printf
-	console_init(xfb,20,20,g_fb_width,g_fb_height,g_fb_width*VI_DISPLAY_PIX_SZ);
+	console_init(g_xfb[g_fbi], 20, 20, g_fb_width, g_fb_height,
+				 g_fb_width * VI_DISPLAY_PIX_SZ);
 
 	// Set up the video registers with the chosen mode
-	VIDEO_Configure(vmode);
+	VIDEO_Configure(g_vmode);
 
 	// Tell the video hardware where our display memory is
-	VIDEO_SetNextFramebuffer(xfb);
+	VIDEO_SetNextFramebuffer(g_xfb[g_fbi]);
 
 	// Make the display visible
 	VIDEO_SetBlack(FALSE);
@@ -249,7 +252,7 @@ void init() {
 
 	// Wait for Video setup to complete
 	VIDEO_WaitVSync();
-	if(vmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+	if(g_vmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
 
 	/*************************************************************************
 	 * AUDIO                                                                 *
@@ -269,7 +272,7 @@ void init() {
 	//	Configure infrared system of the Wii remote
 	WPAD_SetVRes(WPAD_CHAN_0, g_fb_width, g_fb_height);
 	WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
-	WPAD_IR(0, &ir);
+	WPAD_IR(0, &g_ir);
 
 	/*************************************************************************
 	 * GAME RELATED STUFF                                                    *
@@ -322,10 +325,10 @@ int main(int argc, char **argv) {
 //			printf("Joystick moved down.\n");
 //		}*/
 //
-		VIDEO_ClearFrameBuffer(vmode, xfb, COLOR_BLACK);
+		VIDEO_ClearFrameBuffer(g_vmode, g_xfb[g_fbi], COLOR_BLACK);
 
 		// Console output
-		//printInfo();
+		printInfo();
 
 		// Draw stuff
 		drawBox((g_fb_width>>1)-10, (g_fb_height>>1)-10,
@@ -337,8 +340,11 @@ int main(int argc, char **argv) {
 
 		updateParticles();
 
-		// Wait for the next frame
+		// Wait for the next frame and switch framebuffer
+		VIDEO_SetNextFramebuffer(g_xfb[g_fbi]);
+		VIDEO_Flush();
 		VIDEO_WaitVSync();
+		g_fbi^=1;
 	}
 
 	return 0;
