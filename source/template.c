@@ -70,11 +70,13 @@ void cb_WiimotePowerButtonPressed(s32 chan) {
 }
 
 /*****************************************************************************
- * Callback triggered by Wiimote events                                      *
+ * General callback triggered by arbitrary Wiimote events                    *
  *****************************************************************************/
 void cb_WiimoteEventFired(int chan, const WPADData *data) {
 	evctr++;
 	if(data->btns_d & WPAD_BUTTON_A) g_simulate^=1;
+	else if(data->btns_d & WPAD_BUTTON_HOME) exit(0); // Return to loader
+
 }
 
 // Drawing
@@ -111,6 +113,13 @@ void cb_WiimoteEventFired(int chan, const WPADData *data) {
  * 		p = (x,y) = (639,479)                                                *
  * 		=> L(639,479) = 320 * 479 + (639>>1) = 153599.                       *
  *****************************************************************************/
+
+void drawPixel(int x, int y, int color) {
+	u32 *tmpfb = g_xfb[g_fbi];
+	x>>=1;
+	y *= g_fb_width>>1;
+	tmpfb[y+x] = color;
+}
 
 void drawHLine0 (int x1, int x2, int y, int color) {
     int i;
@@ -154,6 +163,21 @@ void drawVLine (int x, int y1, int y2, int color) {
     }
 }
 
+void drawLine(int x0, int y0, int x1, int y1, int color)
+{
+  int dx =  abs(x1-x0), sx = x0<x1 ? 1 : -1;
+  int dy = -abs(y1-y0), sy = y0<y1 ? 1 : -1;
+  int err = dx+dy, e2; /* error value e_xy */
+
+  for(;;) {
+	  drawPixel(x0,y0, color);
+	  if (x0==x1 && y0==y1) break;
+	  e2 = 2*err;
+	  if (e2 > dy) { err += dy; x0 += sx; } /* e_xy+e_x > 0 */
+	  if (e2 < dx) { err += dx; y0 += sy; } /* e_xy+e_y < 0 */
+  }
+}
+
 void drawBox (int x1, int y1, int x2, int y2, int color) {
     drawHLine (x1, x2, y1, color);
     drawHLine (x1, x2, y2, color);
@@ -186,6 +210,29 @@ void drawdot(float w, float h, float fx, float fy, u32 color) {
 		}
 	}
 
+}
+
+void drawEllipse(int xm, int ym, int a, int b, int color)
+{
+   int dx = 0, dy = b;
+   long a2 = a*a, b2 = b*b;
+   long err = b2-(2*b-1)*a2, e2;
+
+   do {
+       drawPixel(xm+dx, ym+dy, color);
+       drawPixel(xm-dx, ym+dy, color);
+       drawPixel(xm-dx, ym-dy, color);
+       drawPixel(xm+dx, ym-dy, color);
+
+       e2 = 2*err;
+       if (e2 <  (2*dx+1)*b2) { dx++; err += (2*dx+1)*b2; }
+       if (e2 > -(2*dy-1)*a2) { dy--; err -= (2*dy-1)*a2; }
+   } while (dy >= 0);
+
+   while (dx++ < a) {
+	   drawPixel(xm+dx, ym, color);
+	   drawPixel(xm-dx, ym, color);
+   }
 }
 
 void displayIR() {
@@ -468,6 +515,12 @@ int main(int argc, char **argv) {
 				(g_fb_width>>1)+10, (g_fb_height>>1)+10, COLOR_WHITE);
 		drawBox(0, 0, g_fb_width-1, g_fb_height-1, COLOR_WHITE);
 		drawVLine(g_fb_width>>1, 0, g_fb_height-1, COLOR_WHITE);
+
+
+		drawLine(100, 100, 200, 300, COLOR_WHITE);
+		drawEllipse(200, 200, 20, 10, COLOR_WHITE);
+		drawCircle(g_fb_width>>1, g_fb_height>>1, 10, COLOR_WHITE);
+
 
 		// Update game engine and render changes
 		if(g_simulate)
